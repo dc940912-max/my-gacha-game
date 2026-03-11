@@ -8,17 +8,25 @@
     <!-- Firebase SDK -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, getDoc, setDoc, updateDoc, onSnapshot } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, getDoc, setDoc, onSnapshot, runTransaction } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // Firebase 配置
-        const firebaseConfig = JSON.parse(__firebase_config);
+        // Firebase 配置 (請確保 projectId 與您的 Console 一致)
+        const firebaseConfig = {
+            apiKey: "AIzaSyALDVL9GL8Klkj3RDb-UKm22HtbJV_7oys",
+            authDomain: "test-egg-a9eb7.firebaseapp.com",
+            projectId: "test-egg-a9eb7",
+            storageBucket: "test-egg-a9eb7.firebasestorage.app",
+            messagingSenderId: "388809306971",
+            appId: "1:388809306971:web:ebcfcc9443513fd00a207e",
+            measurementId: "G-JB00XVX2JP"
+        };
+
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'gacha-pro-sync';
+        const appId = "test-egg-a9eb7"; // 這是您的應用程式 ID 識別碼
 
-        // 全域狀態
         let inventory = { speaker: 0, tableware: 0, bag: 0 };
         let user = null;
         let isSpinning = false;
@@ -37,92 +45,115 @@
             'radial-gradient(circle at 30% 30%, #c084fc, #7c3aed)'  
         ];
 
-        // 初始化與監聽雲端數據
+        // 初始化應用程式
         async function initApp() {
-            // 執行驗證 (RULE 3)
+            const statusText = document.getElementById('status-text');
+            
             try {
-                if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                    await signInWithCustomToken(auth, __initial_auth_token);
-                } else {
-                    await signInAnonymously(auth);
+                // 1. 執行匿名身份驗證 (Firestore 必須驗證身分後才能依規則讀寫)
+                console.log("正在嘗試驗證身份...");
+                const userCredential = await signInAnonymously(auth);
+                user = userCredential.user;
+                console.log("身份驗證成功:", user.uid);
+                
+                // 2. 定義 Firestore 文件路徑 (依據規則：/artifacts/{appId}/public/data/inventory/current)
+                const inventoryRef = doc(db, 'artifacts', appId, 'public', 'data', 'inventory', 'current');
+                
+                // 3. 檢查雲端是否已有資料
+                const docSnap = await getDoc(inventoryRef);
+                
+                if (!docSnap.exists()) {
+                    console.log("雲端無初始庫存，正在建立預設值...");
+                    await setDoc(inventoryRef, { 
+                        speaker: 5, 
+                        tableware: 10, 
+                        bag: 5 
+                    });
+                    console.log("初始庫存建立成功！");
                 }
+
+                // 4. 設定即時監聽 (Snapshot)
+                // 這樣當您在 Firebase Console 修改數字時，網頁會自動更新
+                onSnapshot(inventoryRef, (snapshot) => {
+                    if (snapshot.exists()) {
+                        inventory = snapshot.data();
+                        console.log("收到雲端庫存更新:", inventory);
+                        updateStockUI();
+                    }
+                }, (error) => {
+                    console.error("即時監聽失敗:", error);
+                    if (error.code === 'permission-denied') {
+                        statusText.innerHTML = "<span class='text-red-400 font-bold'>錯誤：Firebase 規則權限遭拒</span>";
+                    }
+                });
+
             } catch (err) {
-                console.error("Auth Error:", err);
+                console.error("初始化過程中發生錯誤:", err);
+                statusText.innerHTML = `<span class='text-yellow-400'>連線異常：${err.message}</span>`;
             }
 
-            onAuthStateChanged(auth, (u) => {
-                user = u;
-                if (user) {
-                    // 修正路徑：確保為偶數段 (RULE 1)
-                    // 使用 doc(db, 'artifacts', appId, 'public', 'data', 'inventory', 'current') 確保路徑段數為 6 (偶數)
-                    const inventoryRef = doc(db, 'artifacts', appId, 'public', 'data', 'inventory', 'current');
-                    
-                    onSnapshot(inventoryRef, (snapshot) => {
-                        if (snapshot.exists()) {
-                            inventory = snapshot.data();
-                            updateStockUI();
-                        } else {
-                            // 第一次運行，初始化庫存
-                            setDoc(inventoryRef, { speaker: 5, tableware: 10, bag: 5 });
-                        }
-                    }, (error) => {
-                        console.error("Firestore Snapshot Error:", error);
-                    });
-                }
-            });
             initEggPit();
         }
 
+        // 更新 UI 狀態
         function updateStockUI() {
             const total = inventory.speaker + inventory.tableware + inventory.bag;
             const statusText = document.getElementById('status-text');
             if (total <= 0) {
-                statusText.innerText = "物資已全數發送完畢";
+                statusText.innerText = "所有獎品已被探索完畢";
                 statusText.classList.add('text-red-400');
+                statusText.classList.remove('text-pink-300');
             } else {
-                statusText.innerText = "夢幻星空復活節限定 - 點擊核心抽獎";
+                statusText.innerText = "星空復活節限定 - 點擊核心啟動";
                 statusText.classList.remove('text-red-400');
+                statusText.classList.add('text-pink-300');
             }
         }
 
+        // 開始抽獎邏輯
         window.startGacha = async function() {
             if (isSpinning || !user) return;
             const total = inventory.speaker + inventory.tableware + inventory.bag;
-            if (total <= 0) {
-                alert("太遲了！所有獎品已被搶購一空。");
-                return;
-            }
+            if (total <= 0) return;
 
             isSpinning = true;
             const knob = document.getElementById('gacha-knob');
             const pit = document.getElementById('egg-pit');
-            
             knob.style.transform = 'rotate(720deg)';
             pit.classList.add('shaking');
 
-            // 抽獎邏輯
+            // 隨機選一個還有庫存的獎品
             const prize = pickPrize();
             
-            // 同步到雲端 (原子更新庫存)
             try {
                 const inventoryRef = doc(db, 'artifacts', appId, 'public', 'data', 'inventory', 'current');
-                const newStock = { ...inventory };
-                if (newStock[prize] > 0) {
-                    newStock[prize]--;
-                    await setDoc(inventoryRef, newStock);
+                
+                // 使用 Transaction 確保多人同時抽獎時庫存扣除不會出錯
+                await runTransaction(db, async (transaction) => {
+                    const invDoc = await transaction.get(inventoryRef);
+                    const currentInv = invDoc.data();
                     
-                    setTimeout(() => {
-                        pit.classList.remove('shaking');
-                        showFallingBall(prize);
-                    }, 1200);
-                } else {
-                    throw new Error("獎品剛好被抽完了");
-                }
+                    if (currentInv[prize] > 0) {
+                        const newData = { ...currentInv };
+                        newData[prize]--;
+                        transaction.update(inventoryRef, newData);
+                    } else {
+                        throw "庫存已用罄";
+                    }
+                });
+
+                // 扣除成功，播放動畫
+                setTimeout(() => {
+                    pit.classList.remove('shaking');
+                    showFallingBall(prize);
+                }, 1200);
+
             } catch (err) {
-                console.error("更新失敗:", err);
+                console.error("抽獎失敗:", err);
                 isSpinning = false;
                 pit.classList.remove('shaking');
                 knob.style.transform = 'rotate(0deg)';
+                alert("傳輸不穩定 (庫存異動)，請重試。");
             }
         }
 
@@ -179,14 +210,11 @@
         }
 
         window.closeResult = function() {
-            const overlay = document.getElementById('overlay');
-            const resultContainer = document.getElementById('result-container');
-            const knob = document.getElementById('gacha-knob');
-            resultContainer.classList.remove('opened');
+            document.getElementById('result-container').classList.remove('opened');
             setTimeout(() => {
-                overlay.style.display = 'none';
-                resultContainer.style.display = 'none';
-                knob.style.transform = 'rotate(0deg)';
+                document.getElementById('overlay').style.display = 'none';
+                document.getElementById('result-container').style.display = 'none';
+                document.getElementById('gacha-knob').style.transform = 'rotate(0deg)';
                 isSpinning = false;
             }, 600);
         }
@@ -222,37 +250,32 @@
     </style>
 </head>
 <body>
-
-<div class="stars"></div>
-<div class="earth-bottom"></div>
-
-<div class="flex flex-col items-center relative z-20">
-    <div class="mb-6 text-center">
-        <h1 class="text-4xl font-black text-white drop-shadow-[0_0_10px_rgba(255,255,255,0.5)] mb-1">STARRY SURPRISE</h1>
-        <p id="status-text" class="text-pink-300 font-bold tracking-widest text-sm italic">夢幻星空復活節限定 - 初始化中...</p>
-    </div>
-
-    <div class="gacha-container">
-        <div class="machine-top" id="egg-pit"></div>
-        <div class="machine-bottom flex justify-center items-start pt-8">
-            <div class="knob" id="gacha-knob" onclick="startGacha()"></div>
-            <div class="exit-slot"></div>
+    <div class="stars"></div>
+    <div class="earth-bottom"></div>
+    <div class="flex flex-col items-center relative z-20">
+        <div class="mb-6 text-center">
+            <h1 class="text-4xl font-black text-white drop-shadow-[0_0_10px_rgba(255,255,255,0.5)] mb-1">STARRY SURPRISE</h1>
+            <p id="status-text" class="text-pink-300 font-bold tracking-widest text-sm italic">夢幻星空復活節限定 - 初始化中...</p>
         </div>
-        <div id="falling-ball" class="ball"></div>
+        <div class="gacha-container">
+            <div class="machine-top" id="egg-pit"></div>
+            <div class="machine-bottom flex justify-center items-start pt-8">
+                <div class="knob" id="gacha-knob" onclick="startGacha()"></div>
+                <div class="exit-slot"></div>
+            </div>
+            <div id="falling-ball" class="ball"></div>
+        </div>
+        <p class="mt-8 text-white/70 font-bold animate-bounce text-sm">點擊發光核心旋轉</p>
     </div>
-    <p class="mt-8 text-white/70 font-bold animate-bounce">點擊發光核心旋轉</p>
-</div>
-
-<div id="overlay"></div>
-<div id="result-container" class="ball-open-container">
-    <div class="ball-half ball-top" id="result-ball-top"></div>
-    <div class="gift-appear" id="gift-text">
-        <div class="text-pink-200 text-xs tracking-widest mb-2 uppercase">Discovery Found</div>
-        <div id="gift-name" class="bg-white text-indigo-900 font-bold px-6 py-5 rounded-2xl shadow-[0_0_40px_rgba(244,114,182,0.6)] border-4 border-pink-400"></div>
-        <button onclick="closeResult()" class="mt-10 bg-pink-500 text-white font-bold py-3 px-10 rounded-full hover:bg-pink-400 transition-all shadow-lg active:scale-95">收下禮物</button>
+    <div id="overlay"></div>
+    <div id="result-container" class="ball-open-container">
+        <div class="ball-half ball-top" id="result-ball-top"></div>
+        <div class="gift-appear">
+            <div class="text-pink-200 text-xs tracking-widest mb-2 uppercase">Discovery Found</div>
+            <div id="gift-name" class="bg-white text-indigo-900 font-bold px-6 py-5 rounded-2xl shadow-[0_0_40px_rgba(244,114,182,0.6)] border-4 border-pink-400"></div>
+            <button onclick="closeResult()" class="mt-10 bg-pink-500 text-white font-bold py-3 px-10 rounded-full hover:bg-pink-400 transition-all shadow-lg active:scale-95">收下禮物</button>
+        </div>
+        <div class="ball-half ball-bottom"></div>
     </div>
-    <div class="ball-half ball-bottom"></div>
-</div>
-
 </body>
 </html>
