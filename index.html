@@ -3,15 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>夢幻星空探索扭蛋機 - 雲端同步版</title>
+    <title>夢幻星空探索扭蛋機 - 工號驗證版</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Firebase SDK -->
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, signInAnonymously } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, getDoc, setDoc, onSnapshot, runTransaction } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
-        // Firebase 配置 (請確保 projectId 與您的 Console 一致)
         const firebaseConfig = {
             apiKey: "AIzaSyALDVL9GL8Klkj3RDb-UKm22HtbJV_7oys",
             authDomain: "test-egg-a9eb7.firebaseapp.com",
@@ -25,11 +23,12 @@
         const app = initializeApp(firebaseConfig);
         const auth = getAuth(app);
         const db = getFirestore(app);
-        const appId = "test-egg-a9eb7"; // 這是您的應用程式 ID 識別碼
+        const appId = "test-egg-a9eb7";
 
         let inventory = { speaker: 0, tableware: 0, bag: 0 };
-        let user = null;
+        let currentUserEmail = ""; 
         let isSpinning = false;
+        let authReady = false;
 
         const prizeNames = {
             speaker: "藍芽音響 🔊",
@@ -45,115 +44,106 @@
             'radial-gradient(circle at 30% 30%, #c084fc, #7c3aed)'  
         ];
 
-        // 初始化應用程式
-        async function initApp() {
-            const statusText = document.getElementById('status-text');
-            
+        // 初始化
+        async function init() {
             try {
-                // 1. 執行匿名身份驗證 (Firestore 必須驗證身分後才能依規則讀寫)
-                console.log("正在嘗試驗證身份...");
-                const userCredential = await signInAnonymously(auth);
-                user = userCredential.user;
-                console.log("身份驗證成功:", user.uid);
+                await signInAnonymously(auth);
+                authReady = true;
                 
-                // 2. 定義 Firestore 文件路徑 (依據規則：/artifacts/{appId}/public/data/inventory/current)
-                const inventoryRef = doc(db, 'artifacts', appId, 'public', 'data', 'inventory', 'current');
-                
-                // 3. 檢查雲端是否已有資料
-                const docSnap = await getDoc(inventoryRef);
-                
-                if (!docSnap.exists()) {
-                    console.log("雲端無初始庫存，正在建立預設值...");
-                    await setDoc(inventoryRef, { 
-                        speaker: 5, 
-                        tableware: 10, 
-                        bag: 5 
-                    });
-                    console.log("初始庫存建立成功！");
-                }
-
-                // 4. 設定即時監聽 (Snapshot)
-                // 這樣當您在 Firebase Console 修改數字時，網頁會自動更新
-                onSnapshot(inventoryRef, (snapshot) => {
-                    if (snapshot.exists()) {
-                        inventory = snapshot.data();
-                        console.log("收到雲端庫存更新:", inventory);
+                const invRef = doc(db, 'artifacts', appId, 'public', 'data', 'inventory', 'current');
+                onSnapshot(invRef, (snap) => {
+                    if (snap.exists()) {
+                        inventory = snap.data();
                         updateStockUI();
+                    } else {
+                        setDoc(invRef, { speaker: 5, tableware: 10, bag: 5 });
                     }
-                }, (error) => {
-                    console.error("即時監聽失敗:", error);
-                    if (error.code === 'permission-denied') {
-                        statusText.innerHTML = "<span class='text-red-400 font-bold'>錯誤：Firebase 規則權限遭拒</span>";
-                    }
-                });
-
-            } catch (err) {
-                console.error("初始化過程中發生錯誤:", err);
-                statusText.innerHTML = `<span class='text-yellow-400'>連線異常：${err.message}</span>`;
+                }, (err) => console.error("監聽失敗:", err));
+            } catch (e) {
+                console.error("Auth 失敗:", e);
             }
-
             initEggPit();
         }
 
-        // 更新 UI 狀態
-        function updateStockUI() {
-            const total = inventory.speaker + inventory.tableware + inventory.bag;
-            const statusText = document.getElementById('status-text');
-            if (total <= 0) {
-                statusText.innerText = "所有獎品已被探索完畢";
-                statusText.classList.add('text-red-400');
-                statusText.classList.remove('text-pink-300');
-            } else {
-                statusText.innerText = "星空復活節限定 - 點擊核心啟動";
-                statusText.classList.remove('text-red-400');
-                statusText.classList.add('text-pink-300');
+        // 登入工號 - 掛載至 window
+        window.loginEmployee = async function() {
+            const input = document.getElementById('employee-id');
+            const id = input.value.trim();
+            if (!id) {
+                alert("請輸入工號");
+                return;
+            }
+
+            try {
+                const recordRef = doc(db, 'artifacts', appId, 'public', 'data', 'records', id);
+                const recordSnap = await getDoc(recordRef);
+
+                if (recordSnap.exists()) {
+                    alert("不能重複扭蛋！您已經參加過此活動。");
+                    return;
+                }
+
+                currentUserEmail = id;
+                document.getElementById('login-screen').style.display = 'none';
+                document.getElementById('machine-screen').style.display = 'flex';
+            } catch (err) {
+                console.error("驗證失敗:", err);
+                alert("驗證時發生錯誤，請檢查網路或 Firebase 權限設定。");
             }
         }
 
-        // 開始抽獎邏輯
+        // 開始扭蛋 - 掛載至 window
         window.startGacha = async function() {
-            if (isSpinning || !user) return;
+            if (isSpinning || !authReady || !currentUserEmail) return;
             const total = inventory.speaker + inventory.tableware + inventory.bag;
-            if (total <= 0) return;
+            if (total <= 0) {
+                alert("獎品已全數抽完，感謝您的參與！");
+                return;
+            }
 
             isSpinning = true;
             const knob = document.getElementById('gacha-knob');
             const pit = document.getElementById('egg-pit');
+            
             knob.style.transform = 'rotate(720deg)';
             pit.classList.add('shaking');
 
-            // 隨機選一個還有庫存的獎品
             const prize = pickPrize();
             
             try {
-                const inventoryRef = doc(db, 'artifacts', appId, 'public', 'data', 'inventory', 'current');
-                
-                // 使用 Transaction 確保多人同時抽獎時庫存扣除不會出錯
+                const invRef = doc(db, 'artifacts', appId, 'public', 'data', 'inventory', 'current');
+                const recordRef = doc(db, 'artifacts', appId, 'public', 'data', 'records', currentUserEmail);
+
                 await runTransaction(db, async (transaction) => {
-                    const invDoc = await transaction.get(inventoryRef);
-                    const currentInv = invDoc.data();
+                    const invDoc = await transaction.get(invRef);
+                    const curInv = invDoc.data();
                     
-                    if (currentInv[prize] > 0) {
-                        const newData = { ...currentInv };
+                    if (curInv[prize] > 0) {
+                        const newData = { ...curInv };
                         newData[prize]--;
-                        transaction.update(inventoryRef, newData);
+                        transaction.update(invRef, newData);
+                        transaction.set(recordRef, {
+                            employeeId: currentUserEmail,
+                            prize: prizeNames[prize],
+                            timestamp: new Date().toISOString()
+                        });
                     } else {
-                        throw "庫存已用罄";
+                        throw "該獎品剛好發完了";
                     }
                 });
 
-                // 扣除成功，播放動畫
+                // 動畫時間：轉動 1 秒
                 setTimeout(() => {
                     pit.classList.remove('shaking');
                     showFallingBall(prize);
-                }, 1200);
+                }, 1000);
 
             } catch (err) {
-                console.error("抽獎失敗:", err);
+                console.error("扭蛋交易失敗:", err);
                 isSpinning = false;
                 pit.classList.remove('shaking');
                 knob.style.transform = 'rotate(0deg)';
-                alert("傳輸不穩定 (庫存異動)，請重試。");
+                alert("發生錯誤：" + err);
             }
         }
 
@@ -165,11 +155,68 @@
             return pool[Math.floor(Math.random() * pool.length)];
         }
 
+        function showFallingBall(prize) {
+            const ball = document.getElementById('falling-ball');
+            const grad = colors[Math.floor(Math.random() * colors.length)];
+            ball.style.background = grad;
+            ball.style.display = 'block';
+            ball.classList.add('dropping');
+            
+            setTimeout(() => {
+                ball.classList.remove('dropping');
+                ball.style.display = 'none';
+                showResult(prize, grad);
+            }, 800);
+        }
+
+        function showResult(prize, grad) {
+            const overlay = document.getElementById('overlay');
+            const resultContainer = document.getElementById('result-container');
+            const giftName = document.getElementById('gift-name');
+            const ballTop = document.getElementById('result-ball-top');
+            
+            ballTop.style.background = grad;
+            giftName.innerText = prizeNames[prize];
+            overlay.style.display = 'block';
+            resultContainer.style.display = 'block';
+            
+            // 這裡模擬開獎動畫，100ms 後觸發 CSS 2秒動畫
+            setTimeout(() => resultContainer.classList.add('opened'), 100);
+        }
+
+        // 掛載至 window
+        window.closeResult = function() {
+            document.getElementById('result-container').classList.remove('opened');
+            setTimeout(() => {
+                document.getElementById('overlay').style.display = 'none';
+                document.getElementById('result-container').style.display = 'none';
+                document.getElementById('gacha-knob').style.transform = 'rotate(0deg)';
+                
+                currentUserEmail = "";
+                document.getElementById('employee-id').value = "";
+                document.getElementById('login-screen').style.display = 'flex';
+                document.getElementById('machine-screen').style.display = 'none';
+                isSpinning = false;
+            }, 600);
+        }
+
+        function updateStockUI() {
+            const total = inventory.speaker + inventory.tableware + inventory.bag;
+            const statusText = document.getElementById('status-text');
+            if (total <= 0) {
+                statusText.innerText = "所有獎品已被探索完畢";
+                statusText.className = "text-red-400 font-bold";
+            } else {
+                statusText.innerText = "星空復活節限定 - 點擊核心啟動";
+                statusText.className = "text-pink-300 font-bold tracking-widest text-sm italic";
+            }
+        }
+
         function initEggPit() {
             const pit = document.getElementById('egg-pit');
-            if (!pit) return;
+            if(!pit) return;
             pit.innerHTML = '';
-            for (let i = 0; i < 40; i++) {
+            for (let i = 0; i < 35; i++) {
                 const egg = document.createElement('div');
                 egg.className = 'bg-egg';
                 egg.style.background = colors[Math.floor(Math.random() * colors.length)];
@@ -184,96 +231,86 @@
             }
         }
 
-        function showFallingBall(prize) {
-            const ball = document.getElementById('falling-ball');
-            const grad = colors[Math.floor(Math.random() * colors.length)];
-            ball.style.background = grad;
-            ball.style.display = 'block';
-            ball.classList.add('dropping');
-            setTimeout(() => {
-                ball.classList.remove('dropping');
-                ball.style.display = 'none';
-                showResult(prize, grad);
-            }, 850);
-        }
-
-        function showResult(prize, grad) {
-            const overlay = document.getElementById('overlay');
-            const resultContainer = document.getElementById('result-container');
-            const giftName = document.getElementById('gift-name');
-            const ballTop = document.getElementById('result-ball-top');
-            ballTop.style.background = grad;
-            giftName.innerText = prizeNames[prize];
-            overlay.style.display = 'block';
-            resultContainer.style.display = 'block';
-            setTimeout(() => resultContainer.classList.add('opened'), 100);
-        }
-
-        window.closeResult = function() {
-            document.getElementById('result-container').classList.remove('opened');
-            setTimeout(() => {
-                document.getElementById('overlay').style.display = 'none';
-                document.getElementById('result-container').style.display = 'none';
-                document.getElementById('gacha-knob').style.transform = 'rotate(0deg)';
-                isSpinning = false;
-            }, 600);
-        }
-
-        window.onload = initApp;
+        window.onload = init;
     </script>
     <style>
         :root { --machine-color: #4338ca; --glass-color: rgba(255, 255, 255, 0.2); --accent-color: #f472b6; }
         body { background: linear-gradient(135deg, #1e1b4b 0%, #4c1d95 40%, #db2777 100%); min-height: 100vh; display: flex; align-items: center; justify-content: center; font-family: sans-serif; overflow: hidden; margin: 0; color: white; }
+        
+        #login-screen { position: fixed; inset: 0; z-index: 100; background: rgba(15, 12, 41, 0.95); display: flex; flex-direction: column; align-items: center; justify-content: center; backdrop-filter: blur(10px); }
+        .login-card { background: rgba(255,255,255,0.1); padding: 2.5rem; border-radius: 2rem; border: 1px solid rgba(255,255,255,0.2); width: 90%; max-width: 400px; text-align: center; }
+
         .stars { position: fixed; inset: 0; pointer-events: none; z-index: 1; background-image: radial-gradient(2px 2px at 20px 30px, #eee, rgba(0,0,0,0)), radial-gradient(2px 2px at 40px 70px, #fff, rgba(0,0,0,0)); background-repeat: repeat; opacity: 0.4; }
         .earth-bottom { position: absolute; bottom: -250px; width: 1000px; height: 500px; background: radial-gradient(circle at top, #818cf8 0%, #4338ca 50%, #1e1b4b 100%); border-radius: 50%; z-index: 2; box-shadow: 0 -20px 80px rgba(129, 140, 248, 0.6); }
-        .gacha-container { position: relative; width: 360px; height: 580px; z-index: 10; }
-        .machine-top { width: 100%; height: 340px; background: var(--glass-color); border: 6px solid rgba(255, 255, 255, 0.4); border-radius: 180px 180px 40px 40px; position: relative; overflow: hidden; backdrop-filter: blur(8px); }
-        @keyframes tumble { 0% { transform: translate(0, 0) rotate(0deg); } 25% { transform: translate(var(--tx), var(--ty)) rotate(90deg); } 50% { transform: translate(calc(var(--tx) * -1), calc(var(--ty) * 0.5)) rotate(180deg); } 100% { transform: translate(0, 0) rotate(360deg); } }
-        .shaking .bg-egg { animation: tumble 0.4s infinite; }
-        .machine-bottom { width: 100%; height: 240px; background: linear-gradient(180deg, #4338ca 0%, #312e81 100%); border: 6px solid rgba(255, 255, 255, 0.4); border-top: none; border-radius: 0 0 60px 60px; position: relative; }
-        .knob { width: 100px; height: 100px; background: white; border: 5px solid var(--accent-color); border-radius: 50%; position: relative; transition: transform 0.8s; box-shadow: 0 0 20px var(--accent-color); cursor: pointer; }
-        .knob::after { content: '✦'; position: absolute; font-size: 40px; color: var(--accent-color); top: 50%; left: 50%; transform: translate(-50%, -50%); }
-        .exit-slot { width: 110px; height: 80px; background: #1e1b4b; position: absolute; bottom: 35px; left: 50%; transform: translateX(-50%); border-radius: 15px; border: 3px solid white; }
-        .bg-egg { position: absolute; width: 70px; height: 70px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.3); box-shadow: inset -8px -8px 15px rgba(0,0,0,0.3); --tx: 10px; --ty: -10px; }
-        .ball { width: 80px; height: 80px; border-radius: 50%; position: absolute; z-index: 25; border: 3px solid white; display: none; }
-        @keyframes dropBall { 0% { transform: translate(-50%, -100px); opacity: 0; } 100% { transform: translate(-50%, 250px); opacity: 1; } }
-        .dropping { animation: dropBall 0.8s forwards; left: 50%; }
+        
+        .gacha-container { position: relative; width: 340px; height: 540px; z-index: 10; }
+        .machine-top { width: 100%; height: 320px; background: var(--glass-color); border: 6px solid rgba(255, 255, 255, 0.4); border-radius: 170px 170px 40px 40px; position: relative; overflow: hidden; backdrop-filter: blur(8px); }
+        .machine-bottom { width: 100%; height: 220px; background: linear-gradient(180deg, #4338ca 0%, #312e81 100%); border: 6px solid rgba(255, 255, 255, 0.4); border-top: none; border-radius: 0 0 60px 60px; position: relative; }
+        
+        .knob { width: 90px; height: 90px; background: white; border: 5px solid var(--accent-color); border-radius: 50%; position: relative; transition: transform 1s cubic-bezier(0.45, 0.05, 0.55, 0.95); box-shadow: 0 0 20px var(--accent-color); cursor: pointer; }
+        .knob::after { content: '✦'; position: absolute; font-size: 30px; color: var(--accent-color); top: 50%; left: 50%; transform: translate(-50%, -50%); }
+        
+        .shaking .bg-egg { animation: tumble 0.3s infinite; }
+        @keyframes tumble { 0% { transform: translate(0, 0) rotate(0deg); } 25% { transform: translate(var(--tx), var(--ty)) rotate(90deg); } 100% { transform: translate(0, 0) rotate(360deg); } }
+        
+        .bg-egg { position: absolute; width: 60px; height: 60px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.3); box-shadow: inset -5px -5px 10px rgba(0,0,0,0.3); }
+        
+        .ball { width: 70px; height: 70px; border-radius: 50%; position: absolute; z-index: 25; border: 3px solid white; display: none; left: 50%; }
+        @keyframes dropBall { 0% { transform: translate(-50%, -100px); opacity: 0; } 100% { transform: translate(-50%, 220px); opacity: 1; } }
+        .dropping { animation: dropBall 0.8s forwards; }
+
         .ball-open-container { position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); display: none; z-index: 100; }
-        .ball-half { width: 180px; height: 90px; border: 4px solid white; transition: all 0.6s; }
-        .ball-top { border-radius: 90px 90px 0 0; background: var(--accent-color); }
-        .ball-bottom { border-radius: 0 0 90px 90px; background: white; }
-        .opened .ball-top { transform: translateY(-120px) rotate(-20deg); opacity: 0; }
-        .opened .ball-bottom { transform: translateY(120px) rotate(20deg); opacity: 0; }
-        .gift-appear { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%) scale(0); width: 300px; transition: all 0.6s 0.3s; z-index: 101; text-align: center; }
-        .opened .gift-appear { transform: translate(-50%, -50%) scale(1.1); }
-        #overlay { position: fixed; inset: 0; background: rgba(30, 27, 75, 0.8); backdrop-filter: blur(10px); display: none; z-index: 90; }
+        .ball-half { width: 220px; height: 110px; border: 4px solid white; transition: all 2s cubic-bezier(0.19, 1, 0.22, 1); }
+        .ball-top { border-radius: 110px 110px 0 0; }
+        .ball-bottom { border-radius: 0 0 110px 110px; background: white; }
+        .opened .ball-top { transform: translateY(-150px) rotate(-15deg); opacity: 0; }
+        .opened .ball-bottom { transform: translateY(150px) rotate(15deg); opacity: 0; }
+        
+        .gift-appear { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%) scale(0); width: 320px; transition: all 1s 1s; z-index: 101; text-align: center; }
+        .opened .gift-appear { transform: translate(-50%, -50%) scale(1); }
+        
+        #overlay { position: fixed; inset: 0; background: rgba(7, 5, 20, 0.9); backdrop-filter: blur(15px); display: none; z-index: 90; }
     </style>
 </head>
 <body>
     <div class="stars"></div>
     <div class="earth-bottom"></div>
-    <div class="flex flex-col items-center relative z-20">
+
+    <div id="login-screen">
+        <div class="login-card">
+            <h2 class="text-2xl font-bold text-white mb-2">星空探索啟動</h2>
+            <p class="text-pink-300 text-sm mb-6">請輸入您的工號以參加扭蛋</p>
+            <input type="text" id="employee-id" placeholder="例如: TW12345" 
+                class="w-full bg-indigo-900/50 border-2 border-indigo-400 rounded-xl px-4 py-3 text-white text-center text-lg focus:outline-none focus:border-pink-400 mb-4">
+            <button onclick="loginEmployee()" 
+                class="w-full bg-pink-500 hover:bg-pink-400 text-white font-bold py-3 rounded-xl transition-all shadow-lg active:scale-95">
+                驗證身分
+            </button>
+        </div>
+    </div>
+
+    <div id="machine-screen" class="flex-col items-center relative z-20" style="display: none;">
         <div class="mb-6 text-center">
-            <h1 class="text-4xl font-black text-white drop-shadow-[0_0_10px_rgba(255,255,255,0.5)] mb-1">STARRY SURPRISE</h1>
-            <p id="status-text" class="text-pink-300 font-bold tracking-widest text-sm italic">夢幻星空復活節限定 - 初始化中...</p>
+            <h1 class="text-4xl font-black text-white drop-shadow-[0_0_10px_rgba(255,255,255,0.5)] mb-1">STARRY GACHA</h1>
+            <p id="status-text" class="text-pink-300 font-bold tracking-widest text-sm italic">點擊核心啟動</p>
         </div>
         <div class="gacha-container">
             <div class="machine-top" id="egg-pit"></div>
-            <div class="machine-bottom flex justify-center items-start pt-8">
+            <div class="machine-bottom flex justify-center items-start pt-6">
                 <div class="knob" id="gacha-knob" onclick="startGacha()"></div>
-                <div class="exit-slot"></div>
+                <div class="absolute bottom-10 left-1/2 -translate-x-1/2 w-24 h-16 bg-black/40 rounded-lg border-2 border-white/20"></div>
             </div>
             <div id="falling-ball" class="ball"></div>
         </div>
-        <p class="mt-8 text-white/70 font-bold animate-bounce text-sm">點擊發光核心旋轉</p>
     </div>
+
     <div id="overlay"></div>
     <div id="result-container" class="ball-open-container">
         <div class="ball-half ball-top" id="result-ball-top"></div>
         <div class="gift-appear">
-            <div class="text-pink-200 text-xs tracking-widest mb-2 uppercase">Discovery Found</div>
-            <div id="gift-name" class="bg-white text-indigo-900 font-bold px-6 py-5 rounded-2xl shadow-[0_0_40px_rgba(244,114,182,0.6)] border-4 border-pink-400"></div>
-            <button onclick="closeResult()" class="mt-10 bg-pink-500 text-white font-bold py-3 px-10 rounded-full hover:bg-pink-400 transition-all shadow-lg active:scale-95">收下禮物</button>
+            <div class="text-pink-200 text-xs tracking-widest mb-2 uppercase">Congratulation!</div>
+            <div id="gift-name" class="bg-white text-indigo-900 font-bold px-6 py-6 rounded-3xl shadow-[0_0_50px_rgba(244,114,182,0.5)] border-4 border-pink-400 text-xl"></div>
+            <button onclick="closeResult()" class="mt-12 bg-pink-500 text-white font-bold py-4 px-12 rounded-full hover:bg-pink-400 transition-all shadow-xl active:scale-95">收下禮物並登出</button>
         </div>
         <div class="ball-half ball-bottom"></div>
     </div>
